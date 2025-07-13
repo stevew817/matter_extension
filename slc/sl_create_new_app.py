@@ -46,13 +46,13 @@ class createApp:
                 sys.exit(1)
         #Checkout third_party_hw_drivers_extension submodule for air-quality-sensor-app-sparkfun-thread app and trust the extension
         if "sparkfun" in self.reference_project_file:
-            third_party_hw_drivers_extension_path = os.path.join(os.getcwd(),"third_party","third_party_hw_drivers_extension")
+            third_party_hw_drivers_extension_path = os.path.join(Path(__file__).resolve().parents[1],"third_party","third_party_hw_drivers_extension")
             subprocess.run(["git", "submodule", "update", "--init", "--checkout",third_party_hw_drivers_extension_path ])
             subprocess.run([self.slc_path, "signature", "trust", "--extension-path", third_party_hw_drivers_extension_path])
 
     def get_environment(self):
         try:
-            env_path = os.path.join(os.getcwd(),"slc","tools",".env")
+            env_path = os.path.join(os.path.dirname(Path(__file__).resolve()),"tools",".env")
             load_dotenv(env_path,override=True)
             os.environ["PATH"] = os.getenv("TOOLS_PATH") +  os.environ["PATH"]
             self.java_path = os.getenv("JAVA17_HOME")

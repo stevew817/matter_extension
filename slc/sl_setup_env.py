@@ -41,8 +41,8 @@ os.makedirs(tools_folder_path, exist_ok=True)
 print("\nSyncing and checking out submodules")
 # Checkout submodules
 try:
-    subprocess.run(["git", "submodule", "sync"])
-    subprocess.run(["git", "submodule", "update", "--init"])
+    subprocess.run(["git", "submodule", "sync"], cwd=silabs_chip_root)
+    subprocess.run(["git", "submodule", "update", "--init"], cwd=silabs_chip_root)
 except Exception as e:
     print(e)
     print("Cannot checkout submodules")
