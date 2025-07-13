@@ -222,7 +222,7 @@ if installed_zap_version < MINIMUM_ZAP_REQUIRED:
         print(f"Error while deleting zap located at {zap_path}\nUsing older version of zap may lead to errors.")
     
 #Download and extract Simplicity Commander
-if not os.path.isfile(os.path.join(commander_path,"Commander.app","Contents","MacOS","commander")) and not os.path.isfile(os.path.join(commander_path,"Simplicity Commander","commander.exe")) and not os.path.isfile(os.path.join(commander_path,"commander","commander")) :
+if not os.path.isfile(os.path.join(commander_path,"Commander.app","Contents","MacOS","commander")) and not os.path.isfile(os.path.join(commander_path,"SimplicityCommander","commander.exe")) and not os.path.isfile(os.path.join(commander_path,"commander","commander")) :
     print("Downloading and unzipping Simplicity Commander ...")
     dload.save_unzip(commander_url, tools_folder_path, delete_after=True)
     for filename in os.listdir(commander_path):
@@ -239,6 +239,7 @@ if not os.path.isfile(os.path.join(commander_path,"Commander.app","Contents","Ma
     if platform == "win32":
         with ZipFile(commander_zip, 'r') as zObject:
             zObject.extractall(path=commander_path)
+            os.rename(os.path.join(commander_path, "Simplicity Commander"), os.path.join(commander_path, "SimplicityCommander"))
         os.remove(commander_zip)
     if platform == "linux":
         tar = tarfile.open(commander_zip, "r:bz2")  
@@ -303,9 +304,16 @@ if platform == "darwin":
         outfile.write("SISDK_ROOT={}\n".format(sisdk_root))
         outfile.write("WISECONNECT_ROOT={}\n".format(wiseconnect_root))
 elif platform == "win32":
+    # Detect whether we're on cygwin, since that needs a modified path to commander
+    makeinfo = subprocess.run(["make", "-v"], cwd=silabs_chip_root, stdout=subprocess.PIPE)
+    if "cygwin" in makeinfo.stdout.decode():
+        commander_path = f"/cygdrive/{commander_path[0].lower()}/{commander_path[3:].replace("\\", "/")}/SimplicityCommander/commander.exe"
+    else:
+        commander_path = f"{commander_path}\\SimplicityCommander\\commander.exe"
+
     with open(os.path.expanduser(os.path.join(tools_folder_path,".env")), "w") as outfile:
         outfile.write('STUDIO_ADAPTER_PACK_PATH={}\n'.format(zap_path))
-        outfile.write('POST_BUILD_EXE={}\n'.format(os.path.join(commander_path,"Simplicity Commander","commander.exe")))
+        outfile.write('POST_BUILD_EXE={}\n'.format(commander_path))
         outfile.write('ARM_GCC_DIR={}\n'.format(arm_gcc_dir))
         outfile.write('JAVA17_HOME={}\n'.format(java_path))
         outfile.write('ZAP_INSTALL_PATH={}\n'.format(zap_path.replace("\\","/")))
