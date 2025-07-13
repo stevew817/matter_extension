@@ -7,6 +7,7 @@ import modules.util as _util
 import modules.tools as _tools
 import modules.device as _dev
 import modules.jlink as _jlink
+import modules.pyocd as _pyocd
 import modules.channel as _chan
 import modules.bluetooth as _bt
 import modules.credentials as _creds
@@ -56,7 +57,10 @@ class ProvisionManager:
 
         # Connection string
         conn = ConnectionArguments(args)
-        comm = _tools.Commander(args, conn)
+        if _chan.Channel.PyOCD == conn.channel_type:
+            comm = _tools.PyOCD(args, conn)
+        else:
+            comm = _tools.Commander(args, conn)
 
         # Channel
         if Actions.kBinary == action:
@@ -86,6 +90,10 @@ class ProvisionManager:
         if _chan.Channel.BLE == conn.channel_type:
             # Bluetooth channel
             return _bt.BluetoothChannel(paths, args, conn.address)
+        elif _chan.Channel.PyOCD == conn.channel_type:
+            # PyOCD RTT: Device info required
+            self.collectDeviceInfo(paths, args, conn, comm)
+            return _pyocd.PyOCDChannel(paths, args, conn, comm)
         else:
             # JLink RTT: Device info required
             self.collectDeviceInfo(paths, args, conn, comm)
@@ -215,6 +223,12 @@ class ConnectionArguments:
         elif conn_str.startswith('bt:'):
             self.channel_type = _chan.Channel.BLE
             self.address = conn_str[3:]
+        elif conn_str.startswith('ocd:'):
+            self.channel_type = _chan.Channel.PyOCD
+            components = conn_str[4:].split(':')
+            self.serial_num = components[0]
+            if len(components) > 1:
+                self.address = components[1]
         elif conn_str.find('.') < 0:
             # Serial port
             self.channel_type = _chan.Channel.RTT

@@ -1,0 +1,6 @@
+known_boards:
+  - vendor_name: 'Seeed Studio'
+    product_name: 'Seeed Studio XIAO MG24 (Sense) CMSIS-DAP'
+    shortname: 'xiao-mg24'
+    part: 'efr32mg24b220f1536im48'
+    size: '1536'

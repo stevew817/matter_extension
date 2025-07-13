@@ -5,9 +5,16 @@ import datetime
 import base64
 import hashlib
 import struct
+import pyocd
+from pyocd.subcommands import pack_cmd
+from pyocd.utility.cmdline import convert_reset_type
+from pyocd.flash.file_programmer import FileProgrammer
+import yaml
+import bincopy
 from ecdsa.curves import NIST256p
 import modules.util as _util
 from modules.parameters import ID
+import argparse
 
 
 class Commander:
@@ -52,6 +59,170 @@ class Commander:
 
     def reset(self):
         self.execute(['device', 'reset'], False, False)
+
+
+class PyOCD:
+
+    def __init__(self, args, conn):
+        self.device = args.str(ID.kDevice)
+        self.auto = ('auto' == args.str(ID.kAction))
+        self.conn = conn
+
+        # Auto-detect available adapters
+        probes = pyocd.core.helpers.ConnectHelper.get_all_connected_probes()
+        if len(probes) == 0:
+            raise KeyError("No PyOCD adapters connected to this system")
+        else:
+            with open(os.path.join(os.path.dirname(__file__), 'pyocd_known_targets.yaml'), 'r') as file:
+                known_adapters = yaml.safe_load(file)
+
+            detected_probes = []
+            for probe in probes:
+                if conn.serial_num != "" and probe.unique_id != conn.serial_num:
+                    continue
+
+                # Check if the adapter is known to us
+                for known_adapter in known_adapters['known_boards']:
+                    if known_adapter['vendor_name'] == probe.vendor_name and known_adapter['product_name'] == probe.product_name:
+                        # Add to list if autodetecting or match with both ID and DB
+                        if conn.serial_num == "" or probe.unique_id == conn.serial_num:
+                            detected_probes.append({'id': probe.unique_id, 'attr': known_adapter, 'probe': probe})
+                    elif probe.unique_id == conn.serial_num and conn.address == known_adapter['shortname']:
+                        # Add to list if matching ID and specific DB entry (escape hatch to use generic debug probes)
+                        detected_probes.append({'id': probe.unique_id, 'attr': known_adapter, 'probe': probe})
+
+            if len(detected_probes) == 0:
+                raise KeyError("No known PyOCD adapters connected to this system")
+            elif len(detected_probes) > 1:
+                raise KeyError("More than 1 eligible PyOCD adapter detected - specify target using unique ID. Available IDs: {}".format([x['id'] for x in detected_probes]))
+            else:
+                self.probe = detected_probes[0]
+                print("Using {} with ID {}".format(self.probe['attr']['shortname'], self.probe['id']))
+        self.options = {
+            # Some APs are regarded as nonconforming by PyOCD, so tell it to stick to AP0 on error
+            'adi.v5.max_invalid_ap_count': 0,
+            'target_override': self.probe['attr']['part'],
+            'frequency': 8000000
+        }
+
+    def execute(self, args, output = True, check = True):
+        args.insert(0, 'python -m pyocd')
+        return _util.execute(args, output, check, retry = 2)
+
+    def info(self):
+        res = "Part Number: {}{}".format(self.probe['attr']['part'], os.linesep)
+        res += "Flash Size: {} kb{}".format(self.probe['attr']['size'], os.linesep)
+
+        return DeviceInfo(res.encode())
+
+    def flash(self, path):
+        try:
+            session = pyocd.core.session.Session(self.probe['probe'], options=self.options)
+        except pyocd.core.exceptions.TargetSupportError:
+            print("Target support not found, trying to automatically install...")
+            args = argparse.Namespace(
+                update=True,
+                patterns=["{}*".format(self.probe['attr']['part'][:9].upper())],
+                verbose=0,
+                quiet=0,
+                clean=False,
+                no_download=False
+            )
+            cmd = pack_cmd.PackInstallSubcommand(args)
+            cmd.invoke()
+            print("Retrying...")
+            session = pyocd.core.session.Session(self.probe['probe'], options=self.options)
+
+        converted = False
+        if path[-4:] == ".s37":
+            hexpath = path[:-4] + ".hex"
+            if not os.path.exists(hexpath):
+                # Need to convert srec to hex for PyOCD
+                content = bincopy.BinFile(path)
+                with open(hexpath, "w") as f:
+                    f.write(content.as_ihex())
+                converted = True
+        else:
+            hexpath = path
+
+        try:
+            with session:
+                programmer = FileProgrammer(session)
+                programmer.program(hexpath,
+                                base_address=None,
+                                skip=False,
+                                file_format=None)
+        finally:
+            if converted:
+                os.remove(hexpath)
+
+        if '_ram' in path:
+            # Flashed a ramloader, need to manually set PC/SP to execute
+            content = bincopy.BinFile(path)
+            start = content.minimum_address
+            print("File starting at {}".format(hex(start)))
+
+            start_sp = int.from_bytes(content[start: start+4], byteorder='little')
+            start_pc = int.from_bytes(content[start+4: start+8], byteorder='little')
+
+            with session:
+                session.target.halt()
+                cur_pc = session.target.read_core_register("pc")
+                cur_sp = session.target.read_core_register("sp")
+                print("Current SP/PC: 0x{} / 0x{}".format(hex(cur_sp), hex(cur_pc)))
+                session.target.reset_and_halt(reset_type=pyocd.core.target.Target.ResetType.SW_SYSRESETREQ)
+                session.target.write_core_register("sp", start_sp)
+                session.target.write_core_register("pc", start_pc)
+                session.target.resume()
+
+        else:
+            # Flashed a program to flash, just reset and let run
+            with session:
+                session.target.reset(reset_type=pyocd.core.target.Target.ResetType.HW)
+
+        # Give target some time to come back
+        time.sleep(1)
+
+    def reset(self):
+        session = pyocd.core.session.Session(self.probe['probe'], options=self.options)
+        try:
+            # Get the reset type from the session option.
+            the_reset_type = convert_reset_type(session.options.get('reset_type'))
+
+            # Handle hw reset more efficiently using the probe directly, so we don't need can skip
+            # discovery. However, if halting was requested we need full init even if performing a
+            # hardware reset.
+            is_hw_reset = (the_reset_type == pyocd.core.target.Target.ResetType.HW) and not self._args.halt
+
+            # Only init the board if performing a sw reset.
+            session.open(init_board=(not is_hw_reset))
+            assert session.probe
+            assert session.target
+
+            # If the reset type is default, get the concrete default type from the core so we can log it.
+            if the_reset_type is None:
+                session.target.selected_core = self._args.core
+
+                # TODO This only works right now because all cores are CortexM. The default
+                # reset type should really be moved to CoreTarget.
+                the_reset_type = cast("CortexM", session.target.selected_core).default_reset_type
+
+            print("Performing %s reset...", the_reset_type.name)
+            if is_hw_reset:
+                # For some probe types the probe still has to be connected to drive reset.
+                session.probe.connect()
+                session.probe.reset()
+                session.probe.disconnect()
+            else:
+                if self._args.halt:
+                    session.target.reset_and_halt(reset_type=the_reset_type)
+                else:
+                    session.target.reset(reset_type=the_reset_type)
+            print("Done.")
+        finally:
+            session.close()
+
+        time.sleep(1)
 
 
 class DeviceInfo:

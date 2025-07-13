@@ -7,6 +7,7 @@ class Channel(ABC):
     NONE = 0x00
     RTT = 0x01
     BLE = 0x02
+    PyOCD = 0x03
 
     def __init__(self, type) -> None:
         self.type = type
